@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "singit"
-version = "0.1.0"
+version = "0.1.1"
 description = "SingIt SDK: x402 payment and client-side spending allowance for SingIt Ask."
 readme = "README.md"
 requires-python = ">=3.10"
