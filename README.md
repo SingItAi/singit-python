@@ -1,6 +1,22 @@
+<div align="center">
+
 # singit
 
-x402 payment and client-side spending allowance for [SingIt Ask](../../singit-ask), in a few
+**x402 payment and a client-side spending allowance for SingIt Ask, in a few lines of Python.**
+
+[![PyPI](https://img.shields.io/pypi/v/singit.svg?style=flat-square&color=3775a9)](https://pypi.org/project/singit/)
+[![CI](https://img.shields.io/github/actions/workflow/status/SingItAi/singit-python/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/SingItAi/singit-python/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-3776ab?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
+[![x402](https://img.shields.io/badge/x402-USDC-purple?style=flat-square)](https://x402.org)
+[![Base](https://img.shields.io/badge/Base-USDC-0052FF?style=flat-square)](https://base.org)
+[![Solana](https://img.shields.io/badge/Solana-USDC-9945FF?style=flat-square)](https://solana.com)
+
+[Docs](https://singitai.app/developers/) · [Quickstart](https://singitai.app/docs/quickstart/) · [TypeScript SDK](https://github.com/SingItAi/singit-js) · [MCP server](https://github.com/SingItAi/singit-mcp) · [Examples](https://github.com/SingItAi/singit-examples)
+
+</div>
+
+x402 payment and client-side spending allowance for [SingIt Ask](https://github.com/SingItAi/SingItAI/tree/main/singit-ask), in a few
 lines. Limits are checked in your process before signing. The separate AgentAllowance
 contract covers only the SingIt app's own agent; it does not protect other agents.
 
@@ -60,7 +76,7 @@ singit = SingIt(
 ## Guards
 
 Every call pins the merchant's offer before signing anything, the same way
-`singit-ask/src/metered-buyer.mjs` and `solana-buyer.mjs` do for the service's own buyers:
+`singit-ask/src/metered-buyer.mjs` and `solana-buyer.mjs` in the [main repository](https://github.com/SingItAi/SingItAI/tree/main/singit-ask/src) do for the service's own buyers:
 
 - **Network/asset/payTo.** The offer's `network`, `asset` and `payTo` must exactly match this
   `SingIt` instance's configured network (the built-in pin for `base`/`solana`, or the `pay_to`
@@ -92,11 +108,11 @@ caller to check independently if needed.
   to the offered ceiling, on EVM networks; `"exact"` pays that ceiling flat and is the only
   scheme supported on Solana (see below). `route="completions"` (default) calls
   `POST /v1/chat/completions`, live today. `route="per-model"` calls `POST /v1/chat/{model}`
-  (SI-62), live; `model` is then required.
+ , live; `model` is then required.
 - `wallet_report(address, days=None, api_key=None)` — `GET {app_base_url}/v1/wallet/{address}/reconciliation`
-  (SI-67). The report is private: `api_key` must be a SingIt API key of the account that signs in
+ . The report is private: `api_key` must be a SingIt API key of the account that signs in
   with `address`; without one the server answers 401, and the SDK says so.
-- `pricing()` — `GET {base_url}/pricing.json` (SI-68), live.
+- `pricing()` — `GET {base_url}/pricing.json`, live.
 - `allowance(address, **kwargs)` — `wallet_report(address, **kwargs)["allowance"]`: the on-chain
   spending limit set in the SingIt app, with what has been spent/remains today.
 
@@ -116,3 +132,9 @@ caller to check independently if needed.
   has no testnet deployment to pay.
 
 Framework fetch adapters are currently available only in the TypeScript SDK.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](https://github.com/SingItAi/singit-python/blob/main/CONTRIBUTING.md). Security problems: email contact@singitai.app, not a public
+issue ([SECURITY.md](https://github.com/SingItAi/singit-python/blob/main/SECURITY.md)). MIT licensed. The TypeScript equivalent is
+[`@singitai/sdk`](https://github.com/SingItAi/singit-js).
