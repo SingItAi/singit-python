@@ -135,6 +135,6 @@ Framework fetch adapters are currently available only in the TypeScript SDK.
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security problems: email contact@singitai.app, not a public
-issue ([SECURITY.md](SECURITY.md)). MIT licensed. The TypeScript equivalent is
+See [CONTRIBUTING.md](https://github.com/SingItAi/singit-python/blob/main/CONTRIBUTING.md). Security problems: email contact@singitai.app, not a public
+issue ([SECURITY.md](https://github.com/SingItAi/singit-python/blob/main/SECURITY.md)). MIT licensed. The TypeScript equivalent is
 [`@singitai/sdk`](https://github.com/SingItAi/singit-js).
