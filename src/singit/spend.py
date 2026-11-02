@@ -313,10 +313,12 @@ class PersistentDailyLimiter:
         if port is not None and (parts.scheme, port) not in (("https", 443), ("http", 80)):
             host += f":{port}"
         resource = urlunsplit((parts.scheme, host, parts.path or ("/" if host else ""), "", ""))
+        amount = int(worst_case_atomic)
+        if amount < 0:
+            raise SingItPaymentError("A reserved amount cannot be negative.")
         row = {"v": 1, "t": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"), "day": now.strftime("%Y-%m-%d"),
                "id": secrets.token_hex(8), "event": "reserve", "network": meta["network"], "payer": meta["payer"],
-               "amountAtomic": str(worst_case_atomic), "scheme": meta["scheme"], "resource": resource, "pid": os.getpid()}
-        amount = int(worst_case_atomic)
+               "amountAtomic": str(amount), "scheme": meta["scheme"], "resource": resource, "pid": os.getpid()}
         try:
             with self._lock():
                 spent = self._spent(row["day"], row["network"], row["payer"])

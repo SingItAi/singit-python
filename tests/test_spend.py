@@ -520,3 +520,15 @@ def test_windows_probe_unavailable_never_uses_kill(monkeypatch):
         patch.setattr(module.os, "kill", forbidden)
         patch.setattr(ctypes, "WinDLL", None, raising=False)
         assert not module._owner_dead(f"{os.getpid()}:0123456789abcdef")
+
+
+def test_reserve_stores_a_canonical_amount(tmp_path):
+    from singit.spend import PersistentLimiter
+    limiter = PersistentLimiter(100, file=tmp_path / "spend.jsonl", network="base", payer="0xabc")
+    meta = {"network": "base", "payer": "0xabc", "scheme": "exact", "resource": "https://ask.example/v1/chat"}
+    limiter.reserve("060", meta)
+    assert limiter.remaining_atomic() == 40
+    with pytest.raises(SingItPaymentError):
+        limiter.reserve("060", meta)
+    with pytest.raises(SingItPaymentError):
+        limiter.reserve("-1", meta)
