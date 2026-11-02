@@ -38,7 +38,7 @@ def start():
 
 def client(account, merchant, **overrides):
     options = {"evm_account": account, "network": "base-sepolia", "base_url": merchant.url, "app_base_url": merchant.url,
-               "pay_to": PAY_TO, "max_per_call_usd": 0.01, "max_per_day_usd": 1}
+               "pay_to": PAY_TO, "max_per_call_usd": 0.01, "max_per_day_usd": 1, "spend_log": False}
     options.update(overrides)
     return SingIt(**options)
 
@@ -218,7 +218,7 @@ def test_invoice_accounting_without_sockets(account, monkeypatch, scheme, billed
 
     monkeypatch.setattr(module, "_post_json", post)
     singit = SingIt(evm_account=account, network="base-sepolia", base_url=url, pay_to=PAY_TO,
-                    max_per_call_usd=0.004, max_per_day_usd=0.006)
+                    max_per_call_usd=0.004, max_per_day_usd=0.006, spend_log=False)
     if error:
         with pytest.raises(SingItPaymentError, match="invoice does not match.*unresolved"):
             singit.chat(messages=MESSAGES, scheme=scheme)

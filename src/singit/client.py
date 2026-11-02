@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 
 from .guards import DailyLimiter, SingItPaymentError, decode_header, encode_header, is_atomic_amount, select_offer, usd_to_atomic
+from .spend import PersistentLimiter
 from .pins import DEFAULT_APP_BASE_URL, DEFAULT_BASE_URL, NETWORKS, ROUTE, per_model_route
 
 
@@ -70,6 +71,7 @@ class SingIt:
         rpc_url: str | None = None,
         max_per_call_usd: float | None = None,
         max_per_day_usd: float | None = None,
+        spend_log=None,
     ):
         pin = NETWORKS.get(network)
         if pin is None:
@@ -85,7 +87,6 @@ class SingIt:
         self.pay_to = pay_to or pin.pay_to
         self.rpc_url = rpc_url or pin.default_rpc_url
         self.max_per_call_atomic = usd_to_atomic(max_per_call_usd)
-        self.limiter = DailyLimiter(usd_to_atomic(max_per_day_usd))
         self._evm_account = None
         if pin.family == "evm":
             if evm_account is not None:
@@ -97,6 +98,18 @@ class SingIt:
             else:
                 raise SingItPaymentError("Pass evm_private_key or evm_account to pay on an EVM network.")
         self._solana_signer = solana_signer
+        signer = self._evm_account if pin.family == "evm" else solana_signer
+        address = getattr(signer, "address", None)
+        if address is None and signer is not None:
+            pubkey = getattr(signer, "pubkey", None)
+            address = pubkey() if callable(pubkey) else pubkey
+        self.payer = str(address) if address is not None else "unknown"
+        if pin.family == "evm":
+            self.payer = self.payer.lower()
+        cap = usd_to_atomic(max_per_day_usd)
+        self.limiter = (DailyLimiter(cap) if spend_log is False else PersistentLimiter(
+            cap, None if spend_log is None or spend_log is True else spend_log,
+            network=network, payer=self.payer))
 
     def _sign(self, scheme: str, offer: dict, extensions: dict | None) -> dict:
         from x402.schemas import PaymentRequirements
@@ -173,7 +186,11 @@ class SingIt:
             resource_url=url,
         )
 
-        release = self.limiter.reserve(offer["amount"])
+        if isinstance(self.limiter, PersistentLimiter):
+            release = self.limiter.reserve(offer["amount"], {
+                "network": self.network, "payer": self.payer, "scheme": scheme, "resource": url})
+        else:
+            release = self.limiter.reserve(offer["amount"])
         try:
             payload = self._sign(scheme, offer, challenge.get("extensions"))
         except Exception:
@@ -215,7 +232,9 @@ class SingIt:
         ):
             raise SingItPaymentError("The settlement receipt does not match this request; treating the payment as unresolved.")
 
-        if scheme == "upto":
+        if isinstance(self.limiter, PersistentLimiter):
+            self.limiter.settle(release, total_atomic, offer["amount"], tx=(receipt or {}).get("transaction"))
+        else:
             self.limiter.settle(release, total_atomic, offer["amount"])
 
         payment_info = {"scheme": scheme, "network": self.network, "amountAtomic": total_atomic}
