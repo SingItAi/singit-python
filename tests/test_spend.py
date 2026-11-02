@@ -532,3 +532,14 @@ def test_reserve_stores_a_canonical_amount(tmp_path):
         limiter.reserve("060", meta)
     with pytest.raises(SingItPaymentError):
         limiter.reserve("-1", meta)
+
+
+def test_release_and_settle_amounts_are_canonical(tmp_path):
+    from singit.spend import PersistentLimiter
+    limiter = PersistentLimiter(100, file=tmp_path / "spend.jsonl", network="base", payer="0xabc")
+    meta = {"network": "base", "payer": "0xabc", "scheme": "exact", "resource": "https://ask.example/v1/chat"}
+    limiter.reserve("060", meta)()
+    assert limiter.remaining_atomic() == 100
+    release = limiter.reserve("070", meta)
+    limiter.settle(release, "010", "070")
+    assert limiter.remaining_atomic() == 90

@@ -333,11 +333,11 @@ class PersistentDailyLimiter:
             if state["done"]:
                 return
             state["done"] = True
-            entry = {k: row[k] for k in ("v", "t", "day", "id", "event", "network", "payer", "amountAtomic")}
-            entry.update(t=self.now().astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"), event=event, amountAtomic=str(actual))
-            if tx:
-                entry["tx"] = tx
             try:
+                entry = {k: row[k] for k in ("v", "t", "day", "id", "event", "network", "payer", "amountAtomic")}
+                entry.update(t=self.now().astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"), event=event, amountAtomic=str(int(actual)))
+                if tx:
+                    entry["tx"] = tx
                 with self._lock():
                     self._append(entry)
             except Exception:
@@ -348,7 +348,7 @@ class PersistentDailyLimiter:
                     pass
 
         def release():
-            finish("release", worst_case_atomic)
+            finish("release", amount)
         release.day = row["day"]
         release.finish = finish
         return release
