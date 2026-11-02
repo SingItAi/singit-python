@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import time
 import warnings
 from contextlib import contextmanager
@@ -115,9 +116,58 @@ def spend_summary(file=None, days=7, *, now=None):
     return {"file": data["file"], "days": rows, "skippedLines": data["skippedLines"]}
 
 
+def _hostname():
+    return socket.gethostname().replace(":", "_")
+
+
+def _lock_token():
+    return f"{os.getpid()}:{secrets.token_hex(8)}:{_hostname()}"
+
+
+def _owner_dead(token):
+    if token == "":
+        return True  # Only used after the 30-second age check.
+    match = re.fullmatch(r"([1-9][0-9]*)(?::([0-9a-f]{16})(?::([^:]+))?)?", token)
+    if not match or (match[3] is not None and match[3] != _hostname()):
+        return False
+    if len(match[1]) > 10:
+        return False
+    pid = int(match[1])
+    if os.name == "nt":
+        # os.kill(pid, 0) terminates processes on Windows.
+        try:
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            if pid > 0xffffffff:
+                return False
+            handle = kernel.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: no such PID.
+            try:
+                code = wintypes.DWORD()
+                return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value != 259
+            finally:
+                kernel.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (OSError, OverflowError, ValueError):
+        pass
+    return False
+
+
 def _release_lock(path, token):
     try:
-        if path.read_text() == token:
+        if path.read_text(encoding="utf-8", errors="replace") == token:
             path.unlink()
     except FileNotFoundError:
         pass
@@ -126,24 +176,26 @@ def _release_lock(path, token):
 def _recover_lock(path, observed):
     """Only a recovery guard holder may remove a stale main lock."""
     guard = Path(str(path) + ".recover")
-    token = f"{os.getpid()}:{secrets.token_hex(8)}"
+    token = _lock_token()
     try:
         fd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         try:
             if time.time() - guard.lstat().st_mtime > 30:
-                stale = guard.read_text()
-                _release_lock(guard, stale)
+                stale = guard.read_text(encoding="utf-8", errors="replace")
+                if _owner_dead(stale):
+                    _release_lock(guard, stale)
         except FileNotFoundError:
             pass
         return
     try:
         try:
-            os.write(fd, token.encode("ascii"))
+            os.write(fd, token.encode("utf-8"))
         finally:
             os.close(fd)
         try:
-            if path.read_text() == observed and time.time() - path.lstat().st_mtime > 30:
+            if (path.read_text(encoding="utf-8", errors="replace") == observed and time.time() - path.lstat().st_mtime > 30
+                    and _owner_dead(observed)):
                 path.unlink()
         except FileNotFoundError:
             pass
@@ -190,7 +242,7 @@ class PersistentDailyLimiter:
     @contextmanager
     def _lock(self):
         path = Path(str(self.file) + ".lock")
-        token = f"{os.getpid()}:{secrets.token_hex(8)}"
+        token = _lock_token()
         deadline = time.monotonic() + 5
         while True:
             try:
@@ -199,17 +251,17 @@ class PersistentDailyLimiter:
             except FileExistsError:
                 try:
                     if time.time() - path.lstat().st_mtime > 30:
-                        _recover_lock(path, path.read_text())
+                        _recover_lock(path, path.read_text(encoding="utf-8", errors="replace"))
                 except FileNotFoundError:
                     pass
                 if time.monotonic() >= deadline:
-                    raise SingItPaymentError(f"Could not lock the spend log {self.file}.")
+                    raise SingItPaymentError(f"Could not lock the spend log {self.file}. If no other SingIt process is running, delete {self.file}.lock.")
                 time.sleep(0.015)
             except OSError as error:
                 raise SingItPaymentError(f"Could not lock the spend log {self.file}: {error}") from error
         try:
             try:
-                os.write(fd, token.encode("ascii"))
+                os.write(fd, token.encode("utf-8"))
             finally:
                 os.close(fd)
             yield

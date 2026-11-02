@@ -85,15 +85,15 @@ def test_permissions_and_construction_error(tmp_path):
 def test_lock_stale_and_symlink(tmp_path):
     log = limiter(tmp_path)
     lock = Path(str(log.file) + ".lock")
-    lock.write_text("old pid")
+    lock.write_text("")
     os.utime(lock, (0, 0))
     log.reserve("1")
     target = tmp_path / "target"
-    target.write_text("unchanged")
+    target.write_text("")
     lock.symlink_to(target)
     os.utime(lock, (0, 0), follow_symlinks=False)
     log.reserve("1")
-    assert target.read_text() == "unchanged"
+    assert target.read_text() == ""
 
 
 def test_append_failure_safe_before_and_after_payment(tmp_path, monkeypatch):
@@ -329,7 +329,7 @@ def test_lock_release_preserves_replacement(tmp_path):
     log = limiter(tmp_path)
     path = Path(str(log.file) + ".lock")
     with log._lock():
-        assert re.fullmatch(r"\d+:[0-9a-f]{16}", path.read_text())
+        assert re.fullmatch(r"\d+:[0-9a-f]{16}:[^:]+", path.read_text())
         path.write_text("another:0123456789abcdef")
     assert path.read_text() == "another:0123456789abcdef"
 
@@ -339,7 +339,7 @@ def test_stale_recovery_guard(tmp_path):
     lock = Path(str(log.file) + ".lock")
     guard = Path(str(lock) + ".recover")
     for path in (lock, guard):
-        path.write_text("123:0123456789abcdef")
+        path.write_text("")
         os.utime(path, (0, 0))
     log.reserve("1")
     assert len(read_spend(log.file)["payments"]) == 1
@@ -437,3 +437,57 @@ def test_reservation_fsync_failure_prevents_signing(tmp_path, monkeypatch):
     with pytest.raises(SingItPaymentError, match="Could not reserve"):
         sdk.chat(messages=[{"role": "user", "content": "test"}], scheme="exact")
     assert read_spend(sdk.limiter.file)["payments"] == []
+
+
+@pytest.mark.parametrize("guarded", [False, True])
+@pytest.mark.parametrize("owner", ["dead", "legacy", "pid", "empty", "live", "foreign", "invalid"])
+def test_old_lock_owner(tmp_path, monkeypatch, guarded, owner):
+    import singit.spend as module
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait(timeout=10)
+    tokens = {"dead": f"{child.pid}:0123456789abcdef:{module._hostname()}",
+              "legacy": f"{child.pid}:0123456789abcdef", "pid": str(child.pid), "empty": "",
+              "live": f"{os.getpid()}:0123456789abcdef:{module._hostname()}",
+              "foreign": f"{child.pid}:0123456789abcdef:{module._hostname()}-foreign",
+              "invalid": "invalid"}
+    log = limiter(tmp_path)
+    lock = Path(str(log.file) + ".lock")
+    lock.write_text(tokens["dead"] if guarded else tokens[owner])
+    os.utime(lock, (0, 0))
+    target = Path(str(lock) + ".recover") if guarded else lock
+    target.write_text(tokens[owner])
+    os.utime(target, (0, 0))
+    if owner in ("live", "foreign", "invalid"):
+        ticks = iter([0, 6])
+        monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+        with pytest.raises(SingItPaymentError) as error:
+            log.reserve("1")
+        assert str(error.value).endswith(f" If no other SingIt process is running, delete {log.file}.lock.")
+        assert target.read_text() == tokens[owner]
+    else:
+        log.reserve("1")
+        assert not lock.exists()
+        assert not target.exists()
+
+
+def test_owner_probe_fails_closed(monkeypatch):
+    import singit.spend as module
+    token = f"{os.getpid()}:0123456789abcdef:{module._hostname()}"
+    def denied(*args):
+        raise PermissionError()
+    monkeypatch.setattr(module.os, "kill", denied)
+    assert not module._owner_dead(token)
+    assert not module._owner_dead("9" * 5000)
+    assert not module._owner_dead("invalid")
+
+
+def test_windows_probe_unavailable_never_uses_kill(monkeypatch):
+    import ctypes
+    import singit.spend as module
+    def forbidden(*args):
+        pytest.fail("Windows must never use os.kill")
+    with monkeypatch.context() as patch:
+        patch.setattr(module.os, "name", "nt")
+        patch.setattr(module.os, "kill", forbidden)
+        patch.setattr(ctypes, "WinDLL", None, raising=False)
+        assert not module._owner_dead(f"{os.getpid()}:0123456789abcdef")
