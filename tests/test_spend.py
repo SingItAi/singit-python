@@ -284,6 +284,35 @@ def test_fresh_lock_timeout(tmp_path, monkeypatch):
     assert lock.read_text() == "busy"
 
 
+def test_log_symlink_shares_lock_and_spending(tmp_path, monkeypatch):
+    import singit.spend as module
+    target = tmp_path / "spend.jsonl"
+    target.touch()
+    alias = tmp_path / "alias.jsonl"
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+    linked = PersistentLimiter("1000", alias, now=lambda: NOW)
+    direct = PersistentLimiter("1000", target, now=lambda: NOW)
+    assert linked.file == alias
+    assert spend_summary(linked.file, now=lambda: NOW)["file"] == str(alias)
+    with linked._lock():
+        assert Path(str(target) + ".lock").exists()
+        assert not Path(str(alias) + ".lock").exists()
+        with monkeypatch.context() as patch:
+            ticks = iter([0, 6])
+            patch.setattr(module.time, "monotonic", lambda: next(ticks))
+            with pytest.raises(SingItPaymentError, match="Could not lock the spend log"):
+                direct.reserve("1")
+    linked.reserve("600")
+    assert direct.remaining_atomic() == 400
+    direct.reserve("300")
+    assert linked.remaining_atomic() == 100
+    with pytest.raises(SingItPaymentError, match="Daily spend cap reached: 900"):
+        linked.reserve("101")
+
+
 @pytest.mark.parametrize("failure", ["sign", "refused", "connection", "http", "invoice", "receipt"])
 def test_persistent_failure_outcomes(tmp_path, monkeypatch, failure):
     import singit.client as module

@@ -235,13 +235,15 @@ class PersistentDailyLimiter:
             finally:
                 os.close(fd)
             _sync_directory(self.file.parent)
-            self.file.read_bytes()
+            # Keep the caller's path for display; all accounting uses one target.
+            self._canonical_file = self.file.resolve(strict=True)
+            self._canonical_file.read_bytes()
         except OSError as error:
             raise SingItPaymentError(f"Could not prepare spend log {self.file}: {error}. Pass spend_log=False (in-memory, resets on restart) or a writable path.") from error
 
     @contextmanager
     def _lock(self):
-        path = Path(str(self.file) + ".lock")
+        path = Path(str(self._canonical_file) + ".lock")
         token = _lock_token()
         deadline = time.monotonic() + 5
         while True:
@@ -272,7 +274,7 @@ class PersistentDailyLimiter:
         line = (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         if len(line) >= 4096:
             raise SingItPaymentError(f"Spend log entry too long for {self.file}.")
-        fd = os.open(self.file, os.O_CREAT | os.O_APPEND | os.O_RDWR, 0o600)
+        fd = os.open(self._canonical_file, os.O_CREAT | os.O_APPEND | os.O_RDWR, 0o600)
         try:
             size = os.lseek(fd, 0, os.SEEK_END)
             if size:
@@ -294,7 +296,7 @@ class PersistentDailyLimiter:
             os.close(fd)
 
     def _spent(self, day, network, payer):
-        return sum(int(p["spentAtomic"]) for p in _payments(read_spend(self.file)["lines"])
+        return sum(int(p["spentAtomic"]) for p in _payments(read_spend(self._canonical_file)["lines"])
                    if (p["day"], p["network"], p["payer"]) == (day, network, payer))
 
     def remaining_atomic(self):
