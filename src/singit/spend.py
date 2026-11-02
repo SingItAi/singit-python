@@ -304,7 +304,6 @@ class PersistentDailyLimiter:
 
     def reserve(self, worst_case_atomic, meta=None):
         meta = meta or {"network": self.network, "payer": self.payer, "scheme": "exact", "resource": ""}
-        now = self.now().astimezone(timezone.utc)
         parts = urlsplit(meta["resource"])
         host = (parts.hostname or "").encode("idna").decode("ascii").lower()
         if ":" in host:
@@ -316,11 +315,14 @@ class PersistentDailyLimiter:
         amount = int(worst_case_atomic)
         if amount < 0:
             raise SingItPaymentError("A reserved amount cannot be negative.")
-        row = {"v": 1, "t": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"), "day": now.strftime("%Y-%m-%d"),
-               "id": secrets.token_hex(8), "event": "reserve", "network": meta["network"], "payer": meta["payer"],
+        row = {"v": 1, "id": secrets.token_hex(8), "event": "reserve", "network": meta["network"], "payer": meta["payer"],
                "amountAtomic": str(amount), "scheme": meta["scheme"], "resource": resource, "pid": os.getpid()}
         try:
             with self._lock():
+                # The day is decided while holding the lock: waiting for another process must not book yesterday's allowance.
+                now = self.now().astimezone(timezone.utc)
+                row["t"] = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                row["day"] = now.strftime("%Y-%m-%d")
                 spent = self._spent(row["day"], row["network"], row["payer"])
                 if spent + amount > self.cap_atomic:
                     raise SingItPaymentError(f"Daily spend cap reached: {spent} already spent today, {amount} more would exceed {self.cap_atomic} micro-USDC.")

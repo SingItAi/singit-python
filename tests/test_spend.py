@@ -63,6 +63,25 @@ def test_rollover_and_corruption(tmp_path):
     assert read_spend(log.file)["skippedLines"] == 3
 
 
+def test_reservation_day_is_decided_after_the_lock_is_held(tmp_path):
+    from contextlib import contextmanager
+    clock = [datetime(2026, 11, 2, 23, 59, 59, tzinfo=timezone.utc)]
+    log = PersistentLimiter("1000", tmp_path / "spend", now=lambda: clock[0])
+    held = log._lock
+
+    @contextmanager
+    def waited():
+        with held():
+            clock[0] = datetime(2026, 11, 3, 0, 0, 2, tzinfo=timezone.utc)  # midnight passed while waiting for the lock
+            yield
+    log._lock = waited
+    release = log.reserve("900")
+    assert release.day == "2026-11-03"
+    assert read_spend(log.file)["lines"][0]["day"] == "2026-11-03"
+    log._lock = held
+    assert log.remaining_atomic() == 100
+
+
 def test_settle_wins_orphans_ignored(tmp_path):
     log = limiter(tmp_path)
     release = log.reserve("500")
