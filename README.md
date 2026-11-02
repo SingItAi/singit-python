@@ -113,8 +113,9 @@ headers, signed payloads, prompts or answer bodies are logged. A payment with an
 unknown outcome stays counted at its ceiling. A terminal write failure warns and
 retains the ceiling without hiding the paid answer.
 
-Each reserve reads the whole file under a shared exclusive sibling `.lock` file;
-summary and remaining also read fresh data. Scope is per wallet and network.
+Each reserve reads the whole file under a shared exclusive sibling `.lock` file (a lock is reclaimed only when it is older than
+30 seconds and its owner process on this host is gone; otherwise the reserve is refused after 5 seconds with a message
+naming the lock file); summary and remaining also read fresh data. Scope is per wallet and network.
 The file grows by two short lines per payment; pruning is not included. Use a
 local filesystem: network filesystems are not supported.
 
