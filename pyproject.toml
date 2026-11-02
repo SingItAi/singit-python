@@ -46,3 +46,6 @@ Changelog = "https://github.com/SingItAi/singit-python/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/singit", "README.md", "LICENSE", "pyproject.toml"]
+
+[project.scripts]
+singit = "singit.cli:main"

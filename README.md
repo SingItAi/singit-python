@@ -84,11 +84,10 @@ Every call pins the merchant's offer before signing anything, the same way
   before anything is signed.
 - **Per-call ceiling (`max_per_call_usd`).** The offer's atomic amount must be at or below
   `max_per_call_usd` converted to micro-USDC. A costlier offer is refused.
-- **Per-day ceiling (`max_per_day_usd`).** An in-memory counter per client instance and per UTC day.
-  Reserved at the offer's worst-case ceiling before signing, settled down to the actual billed
-  amount for `upto` only. `exact` always counts the full offer amount. **Not durable**: it resets on restart and is not shared across processes —
-  it is a client-side allowance guard, not a ledger. For the SingIt app agent’s separate on-chain limit, see
-  `allowance()` below.
+- **Per-day ceiling (`max_per_day_usd`).** A persistent per-UTC-day counter, shared by
+  processes on one host for the same wallet and network. The offer's worst-case ceiling is
+  reserved before signing and adjusted to verified billing. Unresolved payments retain their
+  ceiling and are never retried. This is a local client-side guard, not on-chain enforcement.
 - **Settlement receipt.** The `payment-response` header's network and payer are checked against
   the request; a mismatch is treated as unresolved rather than returned as a success.
 
@@ -96,13 +95,65 @@ This SDK does **not** wait for on-chain confirmation of the settlement transacti
 `payment["txHash"]` is returned as reported by the merchant's `payment-response` header for the
 caller to check independently if needed.
 
+## Spend log
+
+Persistence is on by default at `~/.singit/spend.jsonl`, or
+`$SINGIT_HOME/spend.jsonl` when `SINGIT_HOME` is non-empty. Pass
+`spend_log="/writable/path/spend.jsonl"` (or a `Path`) to choose a file;
+`spend_log=None` or `True` uses the default. Pass `spend_log=False` for an
+in-memory counter that resets on restart. An inaccessible log fails construction;
+there is no silent fallback. New directories use mode 0700 and files use 0600.
+
+The append-only UTF-8 JSONL file records `reserve` before signing, followed by
+`settle` or `release`, with version, UTC millisecond timestamp, reserve day, random
+payment id, network, public payer, and decimal micro-USDC amount. Reservations
+also record scheme, URL origin and path (without credentials, query or fragment),
+and process id. Settlements may include the merchant's transaction hash. No keys,
+headers, signed payloads, prompts or answer bodies are logged. A payment with an
+unknown outcome stays counted at its ceiling. A terminal write failure warns and
+retains the ceiling without hiding the paid answer.
+
+Each reserve reads the whole file under a shared exclusive sibling `.lock` file;
+summary and remaining also read fresh data. Scope is per wallet and network.
+The file grows by two short lines per payment; pruning is not included. Use a
+local filesystem: network filesystems are not supported.
+
+```bash
+singit spend summary
+singit spend summary --days 30 --json --file /path/to/spend.jsonl
+singit spend export --csv --days 7 > spend.csv
+python -m singit spend summary
+```
+
+Example output (fake address):
+
+```text
+Spend log: /example/spend.jsonl
+Local client-side log: not on-chain enforcement.
+day network payer payments spent (USDC) settled unresolved released
+2026-11-02 base 0x1111...1111 1 0.002000 1 0 0
+Totals: 1 payments 0.002000 USDC 1 settled 0 unresolved 0 released
+```
+
+Summary defaults to the last seven UTC days including today, newest first.
+Unresolved counts represent reservations counted at their ceiling. Malformed or
+partial lines are skipped and reported. Public payer addresses appear in full
+only in JSON and CSV. `read_spend(file)` and `spend_summary(file, days=7)` provide
+programmatic access; summary atomic amounts are decimal strings.
+
+**What this is not:** this is a local client-side log, not on-chain enforcement,
+not a ledger or proof of payment, and not tamper-proof. Anyone who can edit or
+delete the file can bypass it. It is not shared across machines, and other tools
+using the wallet bypass it. The wallet's own balance, SingIt API-key limits on
+the server, and the SingIt app's on-chain AgentAllowance are separate things.
+
 ## API
 
 - `SingIt(...)` — `evm_private_key | evm_account` (EVM; `evm_account` is any `eth_account`
   `LocalAccount`), `solana_signer` (an `x402[svm]` signer, for `network="solana"`), `network`,
   `base_url` (default `https://ask.singitai.app`), `app_base_url` (default
   `https://app.singitai.app`), `pay_to`, `rpc_url`, `max_per_call_usd`, `max_per_day_usd` (both
-  required).
+  required), `spend_log` (default persistence; `False` for in-memory only).
 - `chat(model=None, messages=..., max_tokens=None, scheme="upto", route="completions")` —
   OpenAI-shaped chat completion. `scheme="upto"` (default) pays only the actual answer cost, up
   to the offered ceiling, on EVM networks; `"exact"` pays that ceiling flat and is the only
@@ -117,6 +168,10 @@ caller to check independently if needed.
   spending limit set in the SingIt app, with what has been spent/remains today.
 
 ## What isn't supported yet
+
+- The local spend log provides no on-chain enforcement, tamper resistance or sharing
+  across machines. Other tools using the wallet bypass it. Network filesystems and log pruning
+  are not supported.
 
 - **Solana `upto` is not supported.** The official `x402` Python package (2.25.0) ships an EVM
   `upto` client (`x402.mechanisms.evm.upto.client.UptoEvmScheme`) but has no Solana equivalent —

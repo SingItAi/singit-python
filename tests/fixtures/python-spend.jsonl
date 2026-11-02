@@ -1,0 +1,2 @@
+{"v":1,"t":"2026-11-02T16:55:01.123Z","day":"2026-11-02","id":"0123456789abcdef","event":"reserve","network":"base","payer":"0x1111111111111111111111111111111111111111","amountAtomic":"9000","scheme":"upto","resource":"https://example.com/v1/chat","pid":123}
+{"v":1,"t":"2026-11-02T16:55:01.123Z","day":"2026-11-02","id":"0123456789abcdef","event":"settle","network":"base","payer":"0x1111111111111111111111111111111111111111","amountAtomic":"4500","tx":"0xfake"}
