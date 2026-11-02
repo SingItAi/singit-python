@@ -2,6 +2,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -138,6 +139,7 @@ def test_concurrent_reservations(tmp_path):
     barrier = tmp_path / "go"
     code = '''import sys,time
 from pathlib import Path
+import re
 from singit import PersistentLimiter,SingItPaymentError
 log=PersistentLimiter("300", sys.argv[1])
 while not Path(sys.argv[2]).exists(): time.sleep(.005)
@@ -321,3 +323,117 @@ def test_csv_escapes_all_special_characters():
     for value in ('=SUM(A1)', '+1', '-1', '@call', 'a\rb', 'a\nb', 'a,b', 'a"b'):
         row = next(csv.reader(io.StringIO(_csv_cell(value) + '\n', newline='')))
         assert row == [("'" + value) if value[0] in '=+-@' else value]
+
+
+def test_lock_release_preserves_replacement(tmp_path):
+    log = limiter(tmp_path)
+    path = Path(str(log.file) + ".lock")
+    with log._lock():
+        assert re.fullmatch(r"\d+:[0-9a-f]{16}", path.read_text())
+        path.write_text("another:0123456789abcdef")
+    assert path.read_text() == "another:0123456789abcdef"
+
+
+def test_stale_recovery_guard(tmp_path):
+    log = limiter(tmp_path)
+    lock = Path(str(log.file) + ".lock")
+    guard = Path(str(lock) + ".recover")
+    for path in (lock, guard):
+        path.write_text("123:0123456789abcdef")
+        os.utime(path, (0, 0))
+    log.reserve("1")
+    assert len(read_spend(log.file)["payments"]) == 1
+    assert not guard.exists()
+    assert not lock.exists()
+
+
+def test_recovery_preserves_changed_main_token(tmp_path):
+    from singit.spend import _recover_lock
+    log = limiter(tmp_path)
+    lock = Path(str(log.file) + ".lock")
+    lock.write_text("replacement:0123456789abcdef")
+    os.utime(lock, (0, 0))
+    _recover_lock(lock, "observed:fedcba9876543210")
+    assert lock.read_text() == "replacement:0123456789abcdef"
+    assert not Path(str(lock) + ".recover").exists()
+
+
+def test_fresh_recovery_guard_is_preserved(tmp_path, monkeypatch):
+    import singit.spend as module
+    log = limiter(tmp_path)
+    lock = Path(str(log.file) + ".lock")
+    guard = Path(str(lock) + ".recover")
+    lock.write_text("old")
+    os.utime(lock, (0, 0))
+    guard.write_text("busy")
+    ticks = iter([0, 6])
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+    with pytest.raises(SingItPaymentError, match="Could not lock the spend log"):
+        log.reserve("1")
+    assert lock.read_text() == "old"
+    assert guard.read_text() == "busy"
+
+
+def test_fsync_failure_rolls_back_reservation(tmp_path, monkeypatch):
+    log = limiter(tmp_path)
+    log.reserve("100")
+    before = log.file.read_bytes()
+    def fail(fd):
+        raise OSError("fsync failed")
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.raises(SingItPaymentError, match="Could not reserve"):
+        log.reserve("200")
+    assert log.file.read_bytes() == before
+    assert len(read_spend(log.file)["payments"]) == 1
+
+
+@pytest.mark.parametrize("event", ["settle", "release"])
+def test_fsync_failure_keeps_ceiling(tmp_path, monkeypatch, event):
+    log = limiter(tmp_path)
+    release = log.reserve("500")
+    before = log.file.read_bytes()
+    def fail(fd):
+        raise OSError("fsync failed")
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.warns(RuntimeWarning, match="ceiling remains counted"):
+        if event == "settle":
+            log.settle(release, "100", "500")
+        else:
+            release()
+    assert log.file.read_bytes() == before
+    assert read_spend(log.file)["payments"][0]["spentAtomic"] == "500"
+
+
+def test_constructor_syncs_new_file_and_directory(tmp_path, monkeypatch):
+    import stat
+    original = os.fsync
+    synced = []
+    def sync(fd):
+        synced.append(os.fstat(fd).st_mode)
+        original(fd)
+    monkeypatch.setattr(os, "fsync", sync)
+    limiter(tmp_path)
+    assert any(stat.S_ISREG(mode) for mode in synced)
+    if os.name == "posix":
+        assert sum(stat.S_ISDIR(mode) for mode in synced) >= 2
+
+
+def test_reservation_fsync_failure_prevents_signing(tmp_path, monkeypatch):
+    import singit.client as module
+    from helpers.merchant import exact_offer, encode
+    sdk = SingIt(evm_account=Account.create(), network="base", spend_log=tmp_path / "log",
+                 max_per_call_usd=.003, max_per_day_usd=.003)
+    offer = exact_offer(network=sdk.pin.caip, asset=sdk.pin.asset, pay_to=sdk.pay_to, amount="2000")
+    def post(url, body, headers):
+        assert not headers
+        return 402, {"payment-required": encode({"x402Version": 2, "resource": {"url": url}, "accepts": [offer]})}, b"{}"
+    def sign(*args, **kwargs):
+        pytest.fail("must refuse before signing")
+    def fail(fd):
+        raise OSError("fsync failed")
+    monkeypatch.setattr(module, "_post_json", post)
+    monkeypatch.setattr(sdk, "_sign", sign)
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.raises(SingItPaymentError, match="Could not reserve"):
+        sdk.chat(messages=[{"role": "user", "content": "test"}], scheme="exact")
+    assert read_spend(sdk.limiter.file)["payments"] == []

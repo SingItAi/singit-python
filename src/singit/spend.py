@@ -115,6 +115,53 @@ def spend_summary(file=None, days=7, *, now=None):
     return {"file": data["file"], "days": rows, "skippedLines": data["skippedLines"]}
 
 
+def _release_lock(path, token):
+    try:
+        if path.read_text() == token:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _recover_lock(path, observed):
+    """Only a recovery guard holder may remove a stale main lock."""
+    guard = Path(str(path) + ".recover")
+    token = f"{os.getpid()}:{secrets.token_hex(8)}"
+    try:
+        fd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        try:
+            if time.time() - guard.lstat().st_mtime > 30:
+                stale = guard.read_text()
+                _release_lock(guard, stale)
+        except FileNotFoundError:
+            pass
+        return
+    try:
+        try:
+            os.write(fd, token.encode("ascii"))
+        finally:
+            os.close(fd)
+        try:
+            if path.read_text() == observed and time.time() - path.lstat().st_mtime > 30:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+    finally:
+        _release_lock(guard, token)
+
+
+def _sync_directory(path):
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 class PersistentDailyLimiter:
     def __init__(self, cap_atomic, file=None, *, network="base", payer="unknown", now=None):
         self.cap_atomic = int(cap_atomic)
@@ -129,8 +176,13 @@ class PersistentDailyLimiter:
                 parent = parent.parent
             for directory in reversed(missing):
                 directory.mkdir(mode=0o700, exist_ok=True)
+                _sync_directory(directory.parent)
             fd = os.open(self.file, os.O_CREAT | os.O_APPEND | os.O_RDWR, 0o600)
-            os.close(fd)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            _sync_directory(self.file.parent)
             self.file.read_bytes()
         except OSError as error:
             raise SingItPaymentError(f"Could not prepare spend log {self.file}: {error}. Pass spend_log=False (in-memory, resets on restart) or a writable path.") from error
@@ -138,6 +190,7 @@ class PersistentDailyLimiter:
     @contextmanager
     def _lock(self):
         path = Path(str(self.file) + ".lock")
+        token = f"{os.getpid()}:{secrets.token_hex(8)}"
         deadline = time.monotonic() + 5
         while True:
             try:
@@ -146,24 +199,22 @@ class PersistentDailyLimiter:
             except FileExistsError:
                 try:
                     if time.time() - path.lstat().st_mtime > 30:
-                        path.unlink()
-                        continue
+                        _recover_lock(path, path.read_text())
                 except FileNotFoundError:
-                    continue
+                    pass
                 if time.monotonic() >= deadline:
                     raise SingItPaymentError(f"Could not lock the spend log {self.file}.")
                 time.sleep(0.015)
             except OSError as error:
                 raise SingItPaymentError(f"Could not lock the spend log {self.file}: {error}") from error
         try:
-            os.write(fd, str(os.getpid()).encode("ascii"))
-            os.close(fd)
-            fd = None
+            try:
+                os.write(fd, token.encode("ascii"))
+            finally:
+                os.close(fd)
             yield
         finally:
-            if fd is not None:
-                os.close(fd)
-            path.unlink(missing_ok=True)
+            _release_lock(path, token)
 
     def _append(self, row):
         line = (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -176,8 +227,17 @@ class PersistentDailyLimiter:
                 os.lseek(fd, size - 1, os.SEEK_SET)
             prefix = b"\n" if size and os.read(fd, 1) != b"\n" else b""
             data = prefix + line
-            if os.write(fd, data) != len(data):
-                raise OSError("incomplete spend log write")
+            try:
+                if os.write(fd, data) != len(data):
+                    raise OSError("incomplete spend log write")
+                os.fsync(fd)
+            except OSError:
+                os.ftruncate(fd, size)
+                try:
+                    os.fsync(fd)
+                except OSError:
+                    pass
+                raise
         finally:
             os.close(fd)
 
@@ -222,7 +282,8 @@ class PersistentDailyLimiter:
             if tx:
                 entry["tx"] = tx
             try:
-                self._append(entry)
+                with self._lock():
+                    self._append(entry)
             except Exception:
                 # Warning filters must not turn a bookkeeping failure into loss of a paid answer.
                 try:
