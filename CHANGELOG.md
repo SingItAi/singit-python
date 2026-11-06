@@ -3,7 +3,7 @@
 This repository was split from [SingItAi/SingItAI](https://github.com/SingItAi/SingItAI)
 (`sdk/python`) with its history kept.
 
-## Unreleased
+## 0.1.2 - 2026-11-06
 
 - A `409 stale_payment_permit` refusal now frees the reservation, in the spend log too, and the error
   says to wait for the previous transaction. The server refuses it before verifying, so nothing can
