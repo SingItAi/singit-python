@@ -1,3 +1,4 @@
+import json
 import pytest
 from eth_account import Account
 
@@ -122,6 +123,42 @@ def test_a_refused_payment_frees_the_daily_reservation(account, start):
     with pytest.raises(SingItPaymentError, match="refused"):
         singit.chat(messages=MESSAGES, scheme="exact")
     assert singit.limiter.remaining_atomic() == 3000
+
+
+STALE = json.dumps({"error": {"code": "stale_payment_permit", "message": "Stale."}}).encode()
+
+
+def test_a_stale_permit_refusal_frees_the_daily_reservation(account, start):
+    merchant = start([exact("2000")])
+    merchant.paid_response = (409, STALE)
+    singit = client(account, merchant, max_per_call_usd=0.003, max_per_day_usd=0.003)
+    with pytest.raises(SingItPaymentError, match="(?s)stale_payment_permit.*Wait for the previous"):
+        singit.chat(messages=MESSAGES, scheme="exact")
+    assert singit.limiter.remaining_atomic() == 3000
+
+
+@pytest.mark.parametrize("body", [json.dumps({"error": {"code": "payment_duplicate"}}).encode(), b"not json", b"[]"])
+def test_another_409_keeps_the_reservation(account, start, body):
+    merchant = start([exact("2000")])
+    merchant.paid_response = (409, body)
+    singit = client(account, merchant, max_per_call_usd=0.003, max_per_day_usd=0.003)
+    with pytest.raises(SingItPaymentError, match="(?s)HTTP 409.*stays counted"):
+        singit.chat(messages=MESSAGES, scheme="exact")
+    assert singit.limiter.remaining_atomic() == 1000
+
+
+def test_the_spend_log_records_a_stale_permit_as_released(account, start, tmp_path):
+    merchant = start([exact("2000")])
+    merchant.paid_response = (409, STALE)
+    log = tmp_path / "spend.jsonl"
+    make = lambda: client(account, merchant, max_per_call_usd=0.003, max_per_day_usd=0.003, spend_log=log)
+    with pytest.raises(SingItPaymentError, match="stale_payment_permit"):
+        make().chat(messages=MESSAGES, scheme="exact")
+    assert [json.loads(line)["event"] for line in log.read_text().splitlines()] == ["reserve", "release"]
+    # 2000 of 3000 would not fit twice if the first reservation were still counted.
+    for _ in range(2):
+        with pytest.raises(SingItPaymentError, match="stale_payment_permit"):
+            make().chat(messages=MESSAGES, scheme="exact")
 
 
 def test_wallet_report_and_allowance_parse_the_mock_response(account, start):

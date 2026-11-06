@@ -5,6 +5,9 @@ This repository was split from [SingItAi/SingItAI](https://github.com/SingItAi/S
 
 ## Unreleased
 
+- A `409 stale_payment_permit` refusal now frees the reservation, in the spend log too, and the error
+  says to wait for the previous transaction. The server refuses it before verifying, so nothing can
+  settle; it used to stay counted against the daily cap. Other 409s stay counted, and nothing is retried.
 - Persist daily spend by default in a local JSONL log, scoped by wallet and network,
   shared across processes on one host, with reservations before signing and safe
   accounting for unresolved payments. `spend_log=False` retains in-memory behavior.

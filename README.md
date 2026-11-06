@@ -110,7 +110,7 @@ payment id, network, public payer, and decimal micro-USDC amount. Reservations
 also record scheme, URL origin and path (without credentials, query or fragment),
 and process id. Settlements may include the merchant's transaction hash. No keys,
 headers, signed payloads, prompts or answer bodies are logged. A payment with an
-unknown outcome stays counted at its ceiling. A terminal write failure warns and
+unknown outcome stays counted at its ceiling. A `409 stale_payment_permit` is refused before verification, so its reservation is freed; wait for the previous transaction before calling again. A terminal write failure warns and
 retains the ceiling without hiding the paid answer.
 
 Each reserve reads the whole file under a shared exclusive sibling `.lock` file (a lock is reclaimed only when it is older than
